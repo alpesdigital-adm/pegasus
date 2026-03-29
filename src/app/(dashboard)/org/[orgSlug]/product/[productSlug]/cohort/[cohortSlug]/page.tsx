@@ -1,7 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { notFound } from 'next/navigation'
 import Link from 'next/link'
-import { Upload, Users, BarChart3, FileText, MessageSquare } from 'lucide-react'
+import { Upload, Users, BarChart3, FileText, MessageSquare, ShoppingCart } from 'lucide-react'
 
 interface Props {
   params: Promise<{
@@ -85,6 +85,30 @@ export default async function CohortPage({ params }: Props) {
   const avgScore = scores.length > 0
     ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length)
     : null
+
+  // Purchase stats
+  const { data: purchases } = await supabase
+    .from('purchases')
+    .select('product_name, amount_paid')
+    .eq('cohort_id', cohort.id)
+
+  const purchaseStats = {
+    totalPurchases: purchases?.length || 0,
+    totalRevenue: (purchases || []).reduce((sum, p) => sum + (Number(p.amount_paid) || 0), 0),
+    productBreakdown: new Map<string, { count: number; revenue: number }>(),
+  }
+
+  for (const p of purchases || []) {
+    const key = p.product_name
+    const existing = purchaseStats.productBreakdown.get(key) || { count: 0, revenue: 0 }
+    existing.count++
+    existing.revenue += Number(p.amount_paid) || 0
+    purchaseStats.productBreakdown.set(key, existing)
+  }
+
+  const productBreakdownArray = Array.from(purchaseStats.productBreakdown.entries())
+    .map(([name, stats]) => ({ name, ...stats }))
+    .sort((a, b) => b.revenue - a.revenue)
 
   const scoreRanges = [
     { range: '0-20', min: 0, max: 20, color: 'bg-red-400' },
@@ -186,6 +210,32 @@ export default async function CohortPage({ params }: Props) {
                   style={{ height: `${Math.max((h.count / maxHistCount) * 100, 3)}%` }}
                 />
                 <span className="text-xs text-gray-400 mt-1">{h.range}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Purchase breakdown */}
+      {purchaseStats.totalPurchases > 0 && (
+        <div className="bg-white rounded-xl border p-5 mb-8">
+          <div className="flex items-center gap-2 mb-4">
+            <ShoppingCart className="w-4 h-4 text-pink-600" />
+            <h2 className="text-sm font-semibold text-gray-900">Vendas</h2>
+            <span className="text-xs text-gray-400 ml-auto">
+              {purchaseStats.totalPurchases} venda{purchaseStats.totalPurchases !== 1 ? 's' : ''} · R$ {purchaseStats.totalRevenue.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+            </span>
+          </div>
+          <div className="space-y-2">
+            {productBreakdownArray.map((p) => (
+              <div key={p.name} className="flex items-center justify-between py-2 border-b border-gray-50 last:border-0">
+                <div>
+                  <span className="text-sm font-medium text-gray-900">{p.name}</span>
+                  <span className="text-xs text-gray-400 ml-2">{p.count} venda{p.count !== 1 ? 's' : ''}</span>
+                </div>
+                <span className="text-sm font-medium text-gray-700">
+                  R$ {p.revenue.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                </span>
               </div>
             ))}
           </div>

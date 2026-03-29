@@ -194,6 +194,16 @@ export function Sidebar({ user, organization }: SidebarProps) {
                         Perfil ICP
                       </Link>
                       <Link
+                        href={`/org/${organization?.slug}/product/${product.slug}/settings`}
+                        className={cn(
+                          'flex items-center px-2 py-1.5 text-xs rounded hover:bg-gray-800 transition-colors',
+                          pathname.includes(`/product/${product.slug}/settings`) ? 'bg-gray-800 text-white' : 'text-gray-400'
+                        )}
+                      >
+                        <Settings className="w-3 h-3 mr-1.5 text-gray-500" />
+                        Configurações
+                      </Link>
+                      <Link
                         href={`/onboarding?step=cohort&product=${product.id}`}
                         className="flex items-center px-2 py-1.5 text-xs text-gray-600 rounded hover:bg-gray-800 hover:text-gray-400 transition-colors"
                       >

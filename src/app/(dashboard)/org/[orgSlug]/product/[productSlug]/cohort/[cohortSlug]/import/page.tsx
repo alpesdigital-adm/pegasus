@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import {
@@ -86,6 +86,7 @@ export default function ImportPage() {
   const [dragOver, setDragOver] = useState(false)
   const [surveyName, setSurveyName] = useState('')
   const [surveyType, setSurveyType] = useState('captacao')
+  const [hasMergeableData, setHasMergeableData] = useState(false)
 
   // Preview state
   const [surveyId, setSurveyId] = useState<string | null>(null)
@@ -105,7 +106,7 @@ export default function ImportPage() {
 
   const supabase = createClient()
 
-  // Resolve cohort_id from slugs
+  // Resolve cohort_id from slugs and check for existing surveys
   async function resolveCohortId(): Promise<string | null> {
     if (cohortId) return cohortId
 
@@ -125,6 +126,18 @@ export default function ImportPage() {
     if (!cohort) return null
 
     setCohortId(cohort.id)
+
+    // Check if there are existing surveys for this cohort
+    const { data: surveys } = await supabase
+      .from('surveys')
+      .select('id', { count: 'exact' })
+      .eq('cohort_id', cohort.id)
+      .limit(1)
+
+    if (surveys && surveys.length > 0) {
+      setHasMergeableData(true)
+    }
+
     return cohort.id
   }
 
@@ -247,7 +260,7 @@ export default function ImportPage() {
     )
   }
 
-  // Drag and drop
+  // Drag and drop - only takes first file
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault()
     setDragOver(false)
@@ -257,6 +270,11 @@ export default function ImportPage() {
       if (!surveyName) setSurveyName(droppedFile.name.replace(/\.(csv|xlsx|xls)$/i, ''))
     }
   }, [surveyName])
+
+  // Initialize cohort check on mount
+  useEffect(() => {
+    resolveCohortId()
+  }, [cohortId])
 
   const basePath = `/org/${orgSlug}/product/${productSlug}/cohort/${cohortSlug}`
 
@@ -309,9 +327,18 @@ export default function ImportPage() {
 
       {/* STEP: Upload */}
       {step === 'upload' && (
-        <div className="bg-white rounded-xl border p-6">
-          <div
-            onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+        <div className="space-y-6">
+          {hasMergeableData && (
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+              <p className="text-sm text-blue-800">
+                <span className="font-medium">Aviso de mesclagem:</span> Esta turma já possui dados de pesquisas anteriores. Novos uploads serão automaticamente mesclados com os dados existentes por email. Respondentes duplicados terão suas respostas atualizadas com novas informações.
+              </p>
+            </div>
+          )}
+
+          <div className="bg-white rounded-xl border p-6">
+            <div
+              onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
             onDragLeave={() => setDragOver(false)}
             onDrop={handleDrop}
             className={cn(
@@ -341,6 +368,7 @@ export default function ImportPage() {
                 <input
                   type="file"
                   accept=".csv,.xlsx,.xls"
+                  multiple
                   onChange={(e) => {
                     const f = e.target.files?.[0]
                     if (f) {
@@ -398,6 +426,7 @@ export default function ImportPage() {
               </button>
             </div>
           )}
+          </div>
         </div>
       )}
 

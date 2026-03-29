@@ -27,9 +27,16 @@ CREATE POLICY "users_own_row" ON users
 CREATE POLICY "users_same_org_read" ON users
   FOR SELECT USING (org_id = public.get_user_org_id());
 
--- 5) Organizations: full access to own org
-CREATE POLICY "org_own" ON organizations
-  FOR ALL USING (id = public.get_user_org_id());
+-- 5) Organizations: separate policies per operation to avoid FOR ALL
+--    interfering with INSERT via implicit WITH CHECK
+CREATE POLICY "org_select" ON organizations
+  FOR SELECT USING (id = public.get_user_org_id());
+
+CREATE POLICY "org_update" ON organizations
+  FOR UPDATE USING (id = public.get_user_org_id());
+
+CREATE POLICY "org_delete" ON organizations
+  FOR DELETE USING (id = public.get_user_org_id());
 
 -- 6) Organizations: any authenticated user can create (onboarding)
 CREATE POLICY "org_insert" ON organizations

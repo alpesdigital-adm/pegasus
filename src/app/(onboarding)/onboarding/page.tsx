@@ -71,11 +71,13 @@ export default function OnboardingPage() {
 
     const slug = slugify(orgName)
 
-    const { data: org, error: orgError } = await supabase
+    // Generate org ID client-side to avoid INSERT...RETURNING
+    // which requires SELECT policy (fails before user profile exists)
+    const orgId = crypto.randomUUID()
+
+    const { error: orgError } = await supabase
       .from('organizations')
-      .insert({ name: orgName, slug })
-      .select()
-      .single()
+      .insert({ id: orgId, name: orgName, slug })
 
     if (orgError) {
       setError(orgError.message)
@@ -88,7 +90,7 @@ export default function OnboardingPage() {
       .from('users')
       .upsert({
         id: user.id,
-        org_id: org.id,
+        org_id: orgId,
         email: user.email!,
         name: user.user_metadata?.name || user.email!.split('@')[0],
         role: 'owner',

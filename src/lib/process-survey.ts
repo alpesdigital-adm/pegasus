@@ -8,6 +8,7 @@ interface ProcessOptions {
   headers: string[]
   rows: string[][]
   columns: ColumnClassification[]
+  surveyType?: string
 }
 
 /**
@@ -15,7 +16,8 @@ interface ProcessOptions {
  * distribute answers to correct tables
  */
 export async function processSurvey(opts: ProcessOptions) {
-  const { supabase, surveyId, cohortId, headers, rows, columns } = opts
+  const { supabase, surveyId, cohortId, headers, rows, columns, surveyType } = opts
+  const isBuyerSurvey = surveyType === 'pos_venda'
 
   // Find key columns
   const emailCol = columns.find((c) => c.columnType === 'identifier_email')
@@ -86,23 +88,27 @@ export async function processSurvey(opts: ProcessOptions) {
     const social = socialCol ? (row[socialCol.index] || '').trim() : null
 
     // Upsert respondent
+    const respondentData: Record<string, unknown> = {
+      cohort_id: cohortId,
+      email,
+      name: name || undefined,
+      phone: phone || undefined,
+      document_id: doc || undefined,
+      social_handle: social || undefined,
+      last_seen_at: new Date().toISOString(),
+    }
+
+    // Auto-mark as buyer for post-sale surveys
+    if (isBuyerSurvey) {
+      respondentData.is_buyer = true
+    }
+
     const { data: respondent, error: respError } = await supabase
       .from('respondents')
-      .upsert(
-        {
-          cohort_id: cohortId,
-          email,
-          name: name || undefined,
-          phone: phone || undefined,
-          document_id: doc || undefined,
-          social_handle: social || undefined,
-          last_seen_at: new Date().toISOString(),
-        },
-        {
-          onConflict: 'cohort_id,email',
-          ignoreDuplicates: false,
-        }
-      )
+      .upsert(respondentData, {
+        onConflict: 'cohort_id,email',
+        ignoreDuplicates: false,
+      })
       .select('id, surveys_responded')
       .single()
 

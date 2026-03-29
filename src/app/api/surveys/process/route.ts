@@ -73,6 +73,7 @@ export async function POST(request: NextRequest) {
         headers: parsed.headers,
         rows: parsed.rows,
         columns: userColumns,
+        surveyType: survey.survey_type,
       })
 
       return NextResponse.json({

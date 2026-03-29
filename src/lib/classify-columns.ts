@@ -99,24 +99,30 @@ export async function classifyColumns(
   const anthropic = new Anthropic({ apiKey })
 
   // Build input for the LLM
+  // Pre-index checkbox groups for O(1) lookup instead of O(n) per column
+  const checkboxGroupMap = new Map<number, string>()
+  for (const g of checkboxGroups) {
+    for (const idx of g.columnIndices) {
+      checkboxGroupMap.set(idx, g.groupName)
+    }
+  }
+
   const columnsInput = stats.map((stat, i) => ({
     index: i,
     header: headers[i],
     uniqueValues: stat.uniqueCount,
     fillRate: Math.round(stat.fillRate * 100) + '%',
     avgLength: Math.round(stat.avgLength),
-    samples: stat.sampleValues,
-    preDetectedCheckboxGroup: checkboxGroups.find((g) => g.columnIndices.includes(i))
-      ? checkboxGroups.find((g) => g.columnIndices.includes(i))!.groupName
-      : null,
+    samples: stat.sampleValues.slice(0, 5), // Limit samples to reduce payload
+    preDetectedCheckboxGroup: checkboxGroupMap.get(i) ?? null,
   }))
 
-  // Include 3 sample rows
-  const sampleData = sampleRows.slice(0, 3).map((row, rowIdx) => {
+  // Include 3 sample rows with truncated values
+  const sampleData = sampleRows.slice(0, 3).map((row) => {
     const rowObj: Record<string, string> = {}
     headers.forEach((h, i) => {
       if (row[i] && row[i].trim()) {
-        rowObj[h] = row[i].substring(0, 200) // Truncate long values
+        rowObj[h] = row[i].substring(0, 100) // Truncate to reduce payload
       }
     })
     return rowObj
@@ -151,8 +157,10 @@ Retorne JSON neste formato exato:
   "notes": ["observações relevantes"]
 }`
 
+  // Haiku is faster and cheaper; classification is a structured extraction task
+  // that doesn't need Sonnet-level reasoning
   const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-haiku-4-5-20251001',
     max_tokens: 8192,
     messages: [
       { role: 'user', content: userMessage },

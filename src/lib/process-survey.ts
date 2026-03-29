@@ -11,9 +11,14 @@ interface ProcessOptions {
   surveyType?: string
 }
 
+const BATCH_SIZE = 50
+
 /**
  * Process survey data: normalize identifiers, create/update respondents,
- * distribute answers to correct tables
+ * distribute answers to correct tables.
+ *
+ * Optimized with batch inserts — groups rows into chunks of BATCH_SIZE
+ * to minimize round-trips to the database.
  */
 export async function processSurvey(opts: ProcessOptions) {
   const { supabase, surveyId, cohortId, headers, rows, columns, surveyType } = opts
@@ -50,11 +55,6 @@ export async function processSurvey(opts: ProcessOptions) {
   const openCols = columns.filter((c) => c.columnType === 'open')
 
   // ─── Column deduplication at ingestion level ───
-  // Before creating survey_columns, check if equivalent columns already
-  // exist in this cohort from previous surveys. If so, reuse the existing
-  // column_id so all answers point to a canonical field.
-
-  // Fetch existing columns for this cohort (from previous surveys)
   const { data: existingCohortColumns } = await supabase
     .from('survey_columns')
     .select('id, normalized_header, column_type, semantic_category, surveys!inner(cohort_id)')
@@ -67,51 +67,34 @@ export async function processSurvey(opts: ProcessOptions) {
     semanticCategory: ec.semantic_category as string | null,
   }))
 
-  /**
-   * Find an existing column that matches the new one.
-   * Match criteria (ordered by confidence):
-   * 1. Exact normalized_header match + same column_type
-   * 2. Same semantic_category + same column_type + header word overlap > 50%
-   */
   function findExistingColumn(
     normalizedHeader: string,
     columnType: string,
     semanticCategory: string | null
   ): string | null {
-    // Strategy 1: exact header match
     const exactMatch = existingColumns.find(
-      (ec) =>
-        ec.normalizedHeader === normalizedHeader &&
-        ec.columnType === columnType
+      (ec) => ec.normalizedHeader === normalizedHeader && ec.columnType === columnType
     )
     if (exactMatch) return exactMatch.id
 
-    // Strategy 2: same semantic category + column type + header word overlap
     if (semanticCategory) {
       const headerWords = new Set(
         normalizedHeader.toLowerCase().split(/[_\s]+/).filter((w) => w.length > 2)
       )
-
       for (const ec of existingColumns) {
         if (ec.columnType !== columnType) continue
         if (ec.semanticCategory !== semanticCategory) continue
-
         const existingWords = new Set(
           ec.normalizedHeader.toLowerCase().split(/[_\s]+/).filter((w) => w.length > 2)
         )
-
-        // Calculate word overlap
         let overlap = 0
         for (const word of headerWords) {
           if (existingWords.has(word)) overlap++
         }
         const smaller = Math.min(headerWords.size, existingWords.size)
-        if (smaller > 0 && overlap / smaller >= 0.5) {
-          return ec.id
-        }
+        if (smaller > 0 && overlap / smaller >= 0.5) return ec.id
       }
     }
-
     return null
   }
 
@@ -136,17 +119,11 @@ export async function processSurvey(opts: ProcessOptions) {
 
   for (const c of relevantColumns) {
     const normalizedHeader = c.normalizedHeader || headers[c.index]
-    const existingId = findExistingColumn(
-      normalizedHeader,
-      c.columnType,
-      c.semanticCategory || null
-    )
+    const existingId = findExistingColumn(normalizedHeader, c.columnType, c.semanticCategory || null)
 
     if (existingId) {
-      // Reuse existing column — answers will point to the canonical column_id
       colIdMap.set(c.index, existingId)
     } else {
-      // New column — will be inserted
       newColumnsToInsert.push({
         survey_id: surveyId,
         column_index: c.index,
@@ -164,7 +141,6 @@ export async function processSurvey(opts: ProcessOptions) {
     }
   }
 
-  // Insert only genuinely new columns
   if (newColumnsToInsert.length > 0) {
     const { data: insertedColumns, error: colError } = await supabase
       .from('survey_columns')
@@ -178,186 +154,217 @@ export async function processSurvey(opts: ProcessOptions) {
     })
   }
 
+  // ─── Process rows in batches ───
   let processedCount = 0
 
-  for (const row of rows) {
-    const rawEmail = (row[emailCol.index] || '').trim()
-    if (!rawEmail || !rawEmail.includes('@')) {
-      processedCount++
+  for (let batchStart = 0; batchStart < rows.length; batchStart += BATCH_SIZE) {
+    const batch = rows.slice(batchStart, batchStart + BATCH_SIZE)
+
+    // Step 1: Prepare and upsert all respondents in this batch at once
+    const respondentRows: {
+      rowIndex: number
+      email: string
+      data: Record<string, unknown>
+    }[] = []
+
+    for (let i = 0; i < batch.length; i++) {
+      const row = batch[i]
+      const rawEmail = (row[emailCol.index] || '').trim()
+      if (!rawEmail || !rawEmail.includes('@')) continue
+
+      const email = normalizeEmail(rawEmail)
+      const name = nameCol ? (row[nameCol.index] || '').trim() : null
+      const phone = phoneCol ? normalizePhone(row[phoneCol.index] || '') : null
+      const doc = docCol ? (row[docCol.index] || '').trim() : null
+      const social = socialCol ? (row[socialCol.index] || '').trim() : null
+
+      const respondentData: Record<string, unknown> = {
+        cohort_id: cohortId,
+        email,
+        name: name || undefined,
+        phone: phone || undefined,
+        document_id: doc || undefined,
+        social_handle: social || undefined,
+        last_seen_at: new Date().toISOString(),
+      }
+
+      if (isBuyerSurvey || isSalesSurvey) {
+        respondentData.is_buyer = true
+      }
+
+      respondentRows.push({ rowIndex: i, email, data: respondentData })
+    }
+
+    if (respondentRows.length === 0) {
+      processedCount += batch.length
       continue
     }
 
-    const email = normalizeEmail(rawEmail)
-    const name = nameCol ? (row[nameCol.index] || '').trim() : null
-    const phone = phoneCol ? normalizePhone(row[phoneCol.index] || '') : null
-    const doc = docCol ? (row[docCol.index] || '').trim() : null
-    const social = socialCol ? (row[socialCol.index] || '').trim() : null
-
-    // Upsert respondent
-    const respondentData: Record<string, unknown> = {
-      cohort_id: cohortId,
-      email,
-      name: name || undefined,
-      phone: phone || undefined,
-      document_id: doc || undefined,
-      social_handle: social || undefined,
-      last_seen_at: new Date().toISOString(),
-    }
-
-    // Auto-mark as buyer for post-sale surveys and sales lists
-    if (isBuyerSurvey || isSalesSurvey) {
-      respondentData.is_buyer = true
-    }
-
-    const { data: respondent, error: respError } = await supabase
+    // Batch upsert respondents
+    const { data: upsertedRespondents, error: batchRespError } = await supabase
       .from('respondents')
-      .upsert(respondentData, {
-        onConflict: 'cohort_id,email',
-        ignoreDuplicates: false,
-      })
-      .select('id, surveys_responded')
-      .single()
+      .upsert(
+        respondentRows.map((r) => r.data),
+        { onConflict: 'cohort_id,email', ignoreDuplicates: false }
+      )
+      .select('id, email')
 
-    if (respError || !respondent) {
-      console.error(`Error upserting respondent ${email}:`, respError)
-      processedCount++
+    if (batchRespError || !upsertedRespondents) {
+      console.error('Batch respondent upsert error:', batchRespError)
+      processedCount += batch.length
       continue
     }
 
-    // Update surveys_responded count
-    await supabase
-      .from('respondents')
-      .update({ surveys_responded: (respondent.surveys_responded || 0) + 1 })
-      .eq('id', respondent.id)
+    // Build email → respondent_id map
+    const emailToId = new Map<string, string>()
+    for (const r of upsertedRespondents) {
+      emailToId.set(r.email, r.id)
+    }
 
-    // Save closed answers
-    const closedAnswers = closedCols
-      .filter((c) => {
+    // Step 2: Collect all answers, UTMs, purchases for this batch
+    const allClosedAnswers: Record<string, unknown>[] = []
+    const allOpenAnswers: Record<string, unknown>[] = []
+    const allUtmRecords: Record<string, unknown>[] = []
+    const allPurchases: Record<string, unknown>[] = []
+
+    for (const rr of respondentRows) {
+      const row = batch[rr.rowIndex]
+      const respondentId = emailToId.get(rr.email)
+      if (!respondentId) continue
+
+      // Closed answers
+      for (const c of closedCols) {
         const val = (row[c.index] || '').trim()
-        return val !== ''
-      })
-      .map((c) => {
-        const val = (row[c.index] || '').trim()
+        if (!val) continue
         const colId = colIdMap.get(c.index)
-        if (!colId) return null
+        if (!colId) continue
 
-        // Handle checkbox groups
         if (c.columnType === 'closed_checkbox_group') {
-          return {
-            respondent_id: respondent.id,
+          allClosedAnswers.push({
+            respondent_id: respondentId,
             survey_id: surveyId,
             column_id: colId,
             value: val,
             checkbox_group_values: [val],
-          }
+          })
+        } else {
+          const numericInfo = extractNumeric(val)
+          allClosedAnswers.push({
+            respondent_id: respondentId,
+            survey_id: surveyId,
+            column_id: colId,
+            value: val,
+            numeric_value: numericInfo.value,
+            numeric_range_min: numericInfo.min,
+            numeric_range_max: numericInfo.max,
+          })
         }
+      }
 
-        // Extract numeric values for ranges
-        const numericInfo = extractNumeric(val)
-
-        return {
-          respondent_id: respondent.id,
-          survey_id: surveyId,
-          column_id: colId,
-          value: val,
-          numeric_value: numericInfo.value,
-          numeric_range_min: numericInfo.min,
-          numeric_range_max: numericInfo.max,
-        }
-      })
-      .filter(Boolean)
-
-    if (closedAnswers.length > 0) {
-      await supabase.from('respondent_answers_closed').insert(closedAnswers)
-    }
-
-    // Save open answers
-    const openAnswers = openCols
-      .filter((c) => {
+      // Open answers
+      for (const c of openCols) {
         const val = (row[c.index] || '').trim()
-        return val !== '' && val.length > 1
-      })
-      .map((c) => {
-        const val = (row[c.index] || '').trim()
+        if (!val || val.length <= 1) continue
         const colId = colIdMap.get(c.index)
-        if (!colId) return null
+        if (!colId) continue
 
-        return {
-          respondent_id: respondent.id,
+        allOpenAnswers.push({
+          respondent_id: respondentId,
           survey_id: surveyId,
           column_id: colId,
           value: val,
           semantic_category: c.semanticCategory || null,
           embedding_input: `${c.normalizedHeader || headers[c.index]}: ${val}`,
+        })
+      }
+
+      // UTM sources
+      if (utmCols.length > 0) {
+        const utmData: Record<string, string | null> = {}
+        utmCols.forEach((c) => {
+          const val = (row[c.index] || '').trim()
+          const cleanVal = val === 'xxxxx' || val === '' ? null : val
+          const header = (c.normalizedHeader || headers[c.index]).toLowerCase()
+
+          if (header.includes('source')) utmData.utm_source = cleanVal
+          else if (header.includes('medium')) utmData.utm_medium = cleanVal
+          else if (header.includes('campaign')) utmData.utm_campaign = cleanVal
+          else if (header.includes('term')) utmData.utm_term = cleanVal
+          else if (header.includes('content')) utmData.utm_content = cleanVal
+          else if (header.includes('utm_id') || header.includes('id')) utmData.utm_id = cleanVal
+        })
+
+        const hasAnyUtm = Object.values(utmData).some((v) => v !== null)
+        if (hasAnyUtm) {
+          allUtmRecords.push({
+            respondent_id: respondentId,
+            survey_id: surveyId,
+            ...utmData,
+          })
         }
-      })
-      .filter(Boolean)
+      }
 
-    if (openAnswers.length > 0) {
-      await supabase.from('respondent_answers_open').insert(openAnswers)
-    }
+      // Purchases (sales data)
+      if (isSalesSurvey) {
+        const productName = saleProductCol ? (row[saleProductCol.index] || '').trim() : null
+        const amountRaw = saleAmountCol ? (row[saleAmountCol.index] || '').trim() : null
+        const paymentMethod = salePaymentCol ? (row[salePaymentCol.index] || '').trim() : null
+        const installmentsRaw = saleInstallmentsCol ? (row[saleInstallmentsCol.index] || '').trim() : null
+        const dateRaw = saleDateCol ? (row[saleDateCol.index] || '').trim() : null
 
-    // Save UTM sources
-    if (utmCols.length > 0) {
-      const utmData: Record<string, string | null> = {}
-      utmCols.forEach((c) => {
-        const val = (row[c.index] || '').trim()
-        const cleanVal = val === 'xxxxx' || val === '' ? null : val
-        const header = (c.normalizedHeader || headers[c.index]).toLowerCase()
+        if (productName) {
+          const amountParsed = amountRaw ? parseNumber(amountRaw) : null
+          const installmentsParsed = installmentsRaw ? parseInt(installmentsRaw.replace(/\D/g, ''), 10) || null : null
+          const purchasedAt = dateRaw ? parseDate(dateRaw) : null
 
-        if (header.includes('source')) utmData.utm_source = cleanVal
-        else if (header.includes('medium')) utmData.utm_medium = cleanVal
-        else if (header.includes('campaign')) utmData.utm_campaign = cleanVal
-        else if (header.includes('term')) utmData.utm_term = cleanVal
-        else if (header.includes('content')) utmData.utm_content = cleanVal
-        else if (header.includes('utm_id') || header.includes('id')) utmData.utm_id = cleanVal
-      })
-
-      const hasAnyUtm = Object.values(utmData).some((v) => v !== null)
-      if (hasAnyUtm) {
-        await supabase.from('respondent_utm_sources').insert({
-          respondent_id: respondent.id,
-          survey_id: surveyId,
-          ...utmData,
-        })
+          allPurchases.push({
+            respondent_id: respondentId,
+            cohort_id: cohortId,
+            product_name: productName,
+            amount_paid: amountParsed,
+            payment_method: paymentMethod || null,
+            installments: installmentsParsed,
+            purchased_at: purchasedAt,
+            source_survey_id: surveyId,
+          })
+        }
       }
     }
 
-    // Create purchase records for sales data
-    if (isSalesSurvey) {
-      const productName = saleProductCol ? (row[saleProductCol.index] || '').trim() : null
-      const amountRaw = saleAmountCol ? (row[saleAmountCol.index] || '').trim() : null
-      const paymentMethod = salePaymentCol ? (row[salePaymentCol.index] || '').trim() : null
-      const installmentsRaw = saleInstallmentsCol ? (row[saleInstallmentsCol.index] || '').trim() : null
-      const dateRaw = saleDateCol ? (row[saleDateCol.index] || '').trim() : null
+    // Step 3: Batch insert all collected data in parallel
+    const insertPromises: PromiseLike<unknown>[] = []
 
-      if (productName) {
-        const amountParsed = amountRaw ? parseNumber(amountRaw) : null
-        const installmentsParsed = installmentsRaw ? parseInt(installmentsRaw.replace(/\D/g, ''), 10) || null : null
-        const purchasedAt = dateRaw ? parseDate(dateRaw) : null
-
-        await supabase.from('purchases').insert({
-          respondent_id: respondent.id,
-          cohort_id: cohortId,
-          product_name: productName,
-          amount_paid: amountParsed,
-          payment_method: paymentMethod || null,
-          installments: installmentsParsed,
-          purchased_at: purchasedAt,
-          source_survey_id: surveyId,
-        })
-      }
+    if (allClosedAnswers.length > 0) {
+      insertPromises.push(
+        supabase.from('respondent_answers_closed').insert(allClosedAnswers)
+      )
+    }
+    if (allOpenAnswers.length > 0) {
+      insertPromises.push(
+        supabase.from('respondent_answers_open').insert(allOpenAnswers)
+      )
+    }
+    if (allUtmRecords.length > 0) {
+      insertPromises.push(
+        supabase.from('respondent_utm_sources').insert(allUtmRecords)
+      )
+    }
+    if (allPurchases.length > 0) {
+      insertPromises.push(
+        supabase.from('purchases').insert(allPurchases)
+      )
     }
 
-    processedCount++
+    // Run all inserts in parallel
+    await Promise.all(insertPromises)
 
-    // Update progress every 50 rows
-    if (processedCount % 50 === 0) {
-      await supabase
-        .from('surveys')
-        .update({ processed_rows: processedCount })
-        .eq('id', surveyId)
-    }
+    processedCount += batch.length
+
+    // Update progress once per batch
+    await supabase
+      .from('surveys')
+      .update({ processed_rows: processedCount })
+      .eq('id', surveyId)
   }
 
   // Final update
@@ -383,19 +390,15 @@ function normalizeEmail(email: string): string {
 
 function normalizePhone(phone: string): string | null {
   if (!phone) return null
-  // Remove everything that's not a digit
   let digits = phone.replace(/\D/g, '')
   if (!digits) return null
 
-  // Remove country code +55 or 55
   if (digits.startsWith('55') && digits.length > 11) {
     digits = digits.slice(2)
   }
-  // Remove leading 0
   if (digits.startsWith('0') && digits.length > 11) {
     digits = digits.slice(1)
   }
-  // Add 9th digit for cellphones without it (10 digits, 3rd digit is 6-9)
   if (digits.length === 10 && parseInt(digits[2]) >= 6) {
     digits = digits.slice(0, 2) + '9' + digits.slice(2)
   }
@@ -408,7 +411,6 @@ function extractNumeric(value: string): {
   min: number | null
   max: number | null
 } {
-  // Range patterns: "de X a Y", "entre X e Y", "X a Y"
   const rangeMatch = value.match(
     /(?:de|entre)?\s*([\d.,]+)\s*(?:a|e|até|-)\s*([\d.,]+)/i
   )
@@ -418,19 +420,16 @@ function extractNumeric(value: string): {
     return { value: null, min, max }
   }
 
-  // "Até X", "Menos de X", "Menor que X"
   const upToMatch = value.match(/(?:até|menos de|menor (?:que|de))\s*([\d.,]+)/i)
   if (upToMatch) {
     return { value: null, min: 0, max: parseNumber(upToMatch[1]) }
   }
 
-  // "Acima de X", "Mais de X", "Maior que X"
   const aboveMatch = value.match(/(?:acima de|mais de|maior (?:que|de))\s*([\d.,]+)/i)
   if (aboveMatch) {
     return { value: null, min: parseNumber(aboveMatch[1]), max: null }
   }
 
-  // Simple number
   const numMatch = value.match(/([\d.,]+)/)
   if (numMatch) {
     return { value: parseNumber(numMatch[1]), min: null, max: null }
@@ -440,7 +439,6 @@ function extractNumeric(value: string): {
 }
 
 function parseNumber(str: string): number | null {
-  // Handle BR format: 1.234,56 → 1234.56
   let clean = str.replace(/\s/g, '')
   if (clean.includes(',') && clean.includes('.')) {
     clean = clean.replace(/\./g, '').replace(',', '.')
@@ -453,11 +451,9 @@ function parseNumber(str: string): number | null {
 
 function parseDate(raw: string): string | null {
   if (!raw) return null
-  // Try ISO format first
   const iso = new Date(raw)
   if (!isNaN(iso.getTime())) return iso.toISOString()
 
-  // Try BR format: dd/mm/yyyy or dd/mm/yy
   const brMatch = raw.match(/(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})/)
   if (brMatch) {
     const day = parseInt(brMatch[1], 10)

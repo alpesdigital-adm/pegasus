@@ -18,6 +18,7 @@ interface ProcessOptions {
 export async function processSurvey(opts: ProcessOptions) {
   const { supabase, surveyId, cohortId, headers, rows, columns, surveyType } = opts
   const isBuyerSurvey = surveyType === 'pos_venda'
+  const isSalesSurvey = surveyType === 'vendas'
 
   // Find key columns
   const emailCol = columns.find((c) => c.columnType === 'identifier_email')
@@ -32,6 +33,13 @@ export async function processSurvey(opts: ProcessOptions) {
 
   // UTM columns
   const utmCols = columns.filter((c) => c.columnType === 'utm')
+
+  // Sales columns
+  const saleProductCol = columns.find((c) => c.columnType === 'sale_product_name')
+  const saleAmountCol = columns.find((c) => c.columnType === 'sale_amount')
+  const salePaymentCol = columns.find((c) => c.columnType === 'sale_payment_method')
+  const saleInstallmentsCol = columns.find((c) => c.columnType === 'sale_installments')
+  const saleDateCol = columns.find((c) => c.columnType === 'sale_date')
 
   // Answer columns (closed + open)
   const closedTypes = [
@@ -196,8 +204,8 @@ export async function processSurvey(opts: ProcessOptions) {
       last_seen_at: new Date().toISOString(),
     }
 
-    // Auto-mark as buyer for post-sale surveys
-    if (isBuyerSurvey) {
+    // Auto-mark as buyer for post-sale surveys and sales lists
+    if (isBuyerSurvey || isSalesSurvey) {
       respondentData.is_buyer = true
     }
 
@@ -315,6 +323,32 @@ export async function processSurvey(opts: ProcessOptions) {
       }
     }
 
+    // Create purchase records for sales data
+    if (isSalesSurvey) {
+      const productName = saleProductCol ? (row[saleProductCol.index] || '').trim() : null
+      const amountRaw = saleAmountCol ? (row[saleAmountCol.index] || '').trim() : null
+      const paymentMethod = salePaymentCol ? (row[salePaymentCol.index] || '').trim() : null
+      const installmentsRaw = saleInstallmentsCol ? (row[saleInstallmentsCol.index] || '').trim() : null
+      const dateRaw = saleDateCol ? (row[saleDateCol.index] || '').trim() : null
+
+      if (productName) {
+        const amountParsed = amountRaw ? parseNumber(amountRaw) : null
+        const installmentsParsed = installmentsRaw ? parseInt(installmentsRaw.replace(/\D/g, ''), 10) || null : null
+        const purchasedAt = dateRaw ? parseDate(dateRaw) : null
+
+        await supabase.from('purchases').insert({
+          respondent_id: respondent.id,
+          cohort_id: cohortId,
+          product_name: productName,
+          amount_paid: amountParsed,
+          payment_method: paymentMethod || null,
+          installments: installmentsParsed,
+          purchased_at: purchasedAt,
+          source_survey_id: surveyId,
+        })
+      }
+    }
+
     processedCount++
 
     // Update progress every 50 rows
@@ -415,6 +449,26 @@ function parseNumber(str: string): number | null {
   }
   const num = parseFloat(clean)
   return isNaN(num) ? null : num
+}
+
+function parseDate(raw: string): string | null {
+  if (!raw) return null
+  // Try ISO format first
+  const iso = new Date(raw)
+  if (!isNaN(iso.getTime())) return iso.toISOString()
+
+  // Try BR format: dd/mm/yyyy or dd/mm/yy
+  const brMatch = raw.match(/(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})/)
+  if (brMatch) {
+    const day = parseInt(brMatch[1], 10)
+    const month = parseInt(brMatch[2], 10) - 1
+    let year = parseInt(brMatch[3], 10)
+    if (year < 100) year += 2000
+    const d = new Date(year, month, day)
+    if (!isNaN(d.getTime())) return d.toISOString()
+  }
+
+  return null
 }
 
 function getUniqueValues(rows: string[][], colIndex: number): string[] {

@@ -59,6 +59,7 @@ const SURVEY_TYPES = [
   { value: 'engajamento', label: 'Engajamento' },
   { value: 'pos_venda', label: 'Pós-venda / Onboarding' },
   { value: 'feedback', label: 'Feedback' },
+  { value: 'vendas', label: 'Lista de vendas' },
 ]
 
 const COLUMN_TYPE_LABELS: Record<string, string> = {
@@ -68,6 +69,8 @@ const COLUMN_TYPE_LABELS: Record<string, string> = {
   noise: 'Ruído (ignorar)', closed_multiple_choice: 'Múltipla escolha',
   closed_scale: 'Escala', closed_range: 'Faixa', closed_binary: 'Sim/Não',
   closed_checkbox_group: 'Checkbox (grupo)', semi_closed: 'Semi-aberta', open: 'Aberta',
+  sale_product_name: 'Produto (venda)', sale_amount: 'Valor pago',
+  sale_payment_method: 'Forma pgto', sale_installments: 'Parcelas', sale_date: 'Data compra',
 }
 
 const COLUMN_TYPE_COLORS: Record<string, string> = {
@@ -80,6 +83,9 @@ const COLUMN_TYPE_COLORS: Record<string, string> = {
   closed_range: 'bg-emerald-100 text-emerald-700', closed_binary: 'bg-emerald-100 text-emerald-700',
   closed_checkbox_group: 'bg-amber-100 text-amber-700',
   semi_closed: 'bg-yellow-100 text-yellow-700', open: 'bg-violet-100 text-violet-700',
+  sale_product_name: 'bg-pink-100 text-pink-700', sale_amount: 'bg-pink-100 text-pink-700',
+  sale_payment_method: 'bg-pink-100 text-pink-700', sale_installments: 'bg-pink-100 text-pink-700',
+  sale_date: 'bg-pink-100 text-pink-700',
 }
 
 const ALL_COLUMN_TYPES = Object.keys(COLUMN_TYPE_LABELS)

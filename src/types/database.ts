@@ -5,7 +5,7 @@ export type PlanType = 'starter' | 'pro' | 'scale'
 export type UserRole = 'owner' | 'admin' | 'traffic_manager' | 'viewer'
 export type CohortType = 'launch' | 'evergreen' | 'live_event'
 export type CohortStatus = 'planning' | 'capturing' | 'live' | 'selling' | 'closed'
-export type SurveyType = 'captacao' | 'pre_venda' | 'engajamento' | 'pos_venda' | 'feedback' | 'onboarding'
+export type SurveyType = 'captacao' | 'pre_venda' | 'engajamento' | 'pos_venda' | 'feedback' | 'onboarding' | 'vendas'
 export type SurveyStatus = 'uploaded' | 'classifying' | 'classified' | 'processing' | 'done' | 'error'
 export type SourcePlatform = 'typeform' | 'google_forms' | 'other'
 export type Temperature = 'cold' | 'warm' | 'hot'
@@ -27,6 +27,11 @@ export type ColumnType =
   | 'closed_checkbox_group'
   | 'semi_closed'
   | 'open'
+  | 'sale_product_name'
+  | 'sale_amount'
+  | 'sale_payment_method'
+  | 'sale_installments'
+  | 'sale_date'
 
 export type SemanticCategory =
   | 'qualification'
@@ -153,5 +158,24 @@ export interface Respondent {
   interactions_count: number | null
   first_seen_at: string
   last_seen_at: string
+  created_at: string
+}
+
+export interface Purchase {
+  id: string
+  respondent_id: string
+  cohort_id: string
+  product_name: string
+  amount_paid: number | null
+  payment_method: string | null
+  installments: number | null
+  purchased_at: string | null
+  source_survey_id: string | null
+  created_at: string
+}
+
+export interface ProductPrerequisite {
+  product_id: string
+  prerequisite_product_id: string
   created_at: string
 }

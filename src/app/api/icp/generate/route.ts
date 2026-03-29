@@ -107,6 +107,68 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    // Enrich buyer status from purchases table
+    // A respondent is a buyer if they have any purchase record in these cohorts
+    const respondentIds = respondents.map((r) => r.id)
+    const { data: purchases } = await supabase
+      .from('purchases')
+      .select('respondent_id, product_name, amount_paid')
+      .in('respondent_id', respondentIds)
+
+    const purchasesByRespondent = new Map<string, { productNames: Set<string>; totalSpent: number }>()
+    if (purchases) {
+      for (const p of purchases) {
+        if (!purchasesByRespondent.has(p.respondent_id)) {
+          purchasesByRespondent.set(p.respondent_id, { productNames: new Set(), totalSpent: 0 })
+        }
+        const entry = purchasesByRespondent.get(p.respondent_id)!
+        entry.productNames.add(p.product_name)
+        entry.totalSpent += Number(p.amount_paid) || 0
+      }
+    }
+
+    // Update buyer flag: use purchases if available, fallback to is_buyer flag
+    const hasPurchaseData = purchasesByRespondent.size > 0
+    for (const r of respondents) {
+      if (hasPurchaseData) {
+        r.is_buyer = purchasesByRespondent.has(r.id)
+      }
+    }
+
+    // Fetch product prerequisites to use as qualification features
+    const { data: prerequisites } = await supabase
+      .from('product_prerequisites')
+      .select('prerequisite_product_id, products!product_prerequisites_prerequisite_product_id_fkey(name)')
+      .eq('product_id', productId)
+
+    // Check which respondents have purchased prerequisite products (cross-cohort)
+    const hasPrereqs = prerequisites && prerequisites.length > 0
+    let prereqSatisfiedSet = new Set<string>()
+
+    if (hasPrereqs) {
+      const prereqProductNames = (prerequisites || []).map(
+        (p) => ((p as Record<string, unknown>).products as Record<string, string>)?.name
+      ).filter(Boolean)
+
+      // Check all purchases across the organization for prerequisite products
+      const { data: allOrgPurchases } = await supabase
+        .from('purchases')
+        .select('respondent_id, product_name, respondents!inner(email)')
+        .in('product_name', prereqProductNames)
+
+      if (allOrgPurchases) {
+        // Map by email since respondent_id differs across cohorts
+        const emailsWithPrereq = new Set(
+          allOrgPurchases.map((p) => ((p as Record<string, unknown>).respondents as Record<string, string>)?.email).filter(Boolean)
+        )
+        const emailToRespondent = new Map(respondents.map((r) => [r.email, r.id]))
+        for (const email of emailsWithPrereq) {
+          const rid = emailToRespondent.get(email)
+          if (rid) prereqSatisfiedSet.add(rid)
+        }
+      }
+    }
+
     const buyerCount = respondents.filter((r) => r.is_buyer).length
     if (buyerCount < 10) {
       return NextResponse.json(
@@ -119,7 +181,6 @@ export async function POST(request: NextRequest) {
     }
 
     // Fetch all closed answers for these respondents
-    const respondentIds = respondents.map((r) => r.id)
     const columnIds = Array.from(columnMap.keys())
 
     // Fetch in batches if needed (Supabase has a limit)
@@ -138,7 +199,6 @@ export async function POST(request: NextRequest) {
     }
 
     // Build RespondentRow array
-    const respondentMap = new Map(respondents.map((r) => [r.id, r]))
     const rowsMap = new Map<string, RespondentRow>()
 
     for (const r of respondents) {
@@ -153,6 +213,39 @@ export async function POST(request: NextRequest) {
       const row = rowsMap.get(a.respondent_id)
       if (row) {
         row.answers[a.column_id] = a.value
+      }
+    }
+
+    // Add purchase-derived synthetic features as virtual columns
+    if (hasPurchaseData) {
+      // "Has prior purchase" feature — indicates the respondent already opened their wallet
+      const virtualColHasPurchase = '__has_prior_purchase'
+      columnMap.set(virtualColHasPurchase, {
+        columnId: virtualColHasPurchase,
+        header: 'Já comprou antes',
+        normalizedHeader: 'ja_comprou_antes',
+        columnType: 'closed_binary',
+        semanticCategory: 'purchase_decision',
+        distinctValues: ['Sim', 'Não'],
+      })
+      for (const [rid, row] of rowsMap) {
+        row.answers[virtualColHasPurchase] = purchasesByRespondent.has(rid) ? 'Sim' : 'Não'
+      }
+    }
+
+    // Prerequisite satisfaction as a feature
+    if (hasPrereqs && prereqSatisfiedSet.size > 0) {
+      const virtualColPrereq = '__has_prerequisite'
+      columnMap.set(virtualColPrereq, {
+        columnId: virtualColPrereq,
+        header: 'Possui pré-requisito',
+        normalizedHeader: 'possui_pre_requisito',
+        columnType: 'closed_binary',
+        semanticCategory: 'qualification',
+        distinctValues: ['Sim', 'Não'],
+      })
+      for (const [rid, row] of rowsMap) {
+        row.answers[virtualColPrereq] = prereqSatisfiedSet.has(rid) ? 'Sim' : 'Não'
       }
     }
 

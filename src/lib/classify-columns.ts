@@ -39,6 +39,11 @@ Analise os headers e amostras de dados de uma pesquisa e classifique cada coluna
 - closed_checkbox_group: header = opção, valor = repetição exata do header quando marcado, vazio quando não
 - semi_closed: texto livre mas com padrões repetitivos (poucas variações)
 - open: texto livre com respostas únicas e longas
+- sale_product_name: nome do produto comprado (em listas de vendas)
+- sale_amount: valor pago / preço
+- sale_payment_method: forma de pagamento (cartão, boleto, pix)
+- sale_installments: número de parcelas
+- sale_date: data da compra/transação
 
 ## Categorias semânticas (semantic_category) — aplicar quando relevante
 - qualification: quem é a pessoa (papel, profissão) — "Quem é você?", "Eu sou"
@@ -73,6 +78,10 @@ Se encontrar colunas consecutivas onde:
 - UTMs com valor "xxxxx" em todas as linhas: ainda classificar como utm
 - Se o header contém email/e-mail E os valores parecem emails → identifier_email
 - Se não souber a categoria semântica, retorne null
+- Para listas de vendas: colunas com nomes de produtos (curso, mentoria, consultoria) → sale_product_name
+- Valores em R$ ou números decimais que parecem preços → sale_amount
+- "Cartão", "Boleto", "Pix", "Crédito" → sale_payment_method
+- Números pequenos (1-24) que indicam parcelas → sale_installments
 
 Responda EXCLUSIVAMENTE com JSON válido, sem markdown, sem explicações fora do JSON.`
 

@@ -122,6 +122,7 @@ export function RespondentsGrid({ cohortId, basePath }: RespondentsGridProps) {
     { key: 'email', label: 'Email', sortable: true },
     { key: 'name', label: 'Nome', sortable: true },
     { key: 'phone', label: 'Telefone', sortable: false },
+    { key: 'icp_score', label: 'Score', sortable: true },
     { key: 'is_buyer', label: 'Comprador', sortable: true },
     { key: 'temperature', label: 'Temperatura', sortable: true },
   ]
@@ -263,6 +264,28 @@ export function RespondentsGrid({ cohortId, basePath }: RespondentsGridProps) {
                       {respondent.phone || '—'}
                     </td>
                     <td className="px-4 py-3">
+                      {respondent.icp_score != null ? (
+                        <span
+                          className={cn(
+                            'inline-flex items-center px-2 py-1 text-xs font-bold rounded-full',
+                            Number(respondent.icp_score) >= 70 && 'bg-emerald-100 text-emerald-700',
+                            Number(respondent.icp_score) >= 40 && Number(respondent.icp_score) < 70 && 'bg-amber-100 text-amber-700',
+                            Number(respondent.icp_score) > 0 && Number(respondent.icp_score) < 40 && 'bg-red-100 text-red-700',
+                            Number(respondent.icp_score) === 0 && 'bg-gray-100 text-gray-500'
+                          )}
+                          title={
+                            respondent.icp_score_details
+                              ? `Avatar: ${(respondent.icp_score_details as Record<string, unknown>).best_avatar_label || '—'}\nProb. conversão: ${(((respondent.icp_score_details as Record<string, unknown>).conversion_probability as number) * 100).toFixed(0)}%`
+                              : ''
+                          }
+                        >
+                          {Number(respondent.icp_score).toFixed(0)}
+                        </span>
+                      ) : (
+                        <span className="text-gray-400">—</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
                       <button
                         onClick={async (e) => {
                           e.stopPropagation()
@@ -318,7 +341,7 @@ export function RespondentsGrid({ cohortId, basePath }: RespondentsGridProps) {
                   {/* Expanded row */}
                   {isExpanded && (
                     <tr className="bg-emerald-50/50 border-b">
-                      <td colSpan={6} className="px-4 py-4">
+                      <td colSpan={7} className="px-4 py-4">
                         <div className="space-y-4">
                           {/* Basic info */}
                           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -337,10 +360,25 @@ export function RespondentsGrid({ cohortId, basePath }: RespondentsGridProps) {
                                 </p>
                               </div>
                             )}
-                            {respondent.icp_score !== null && (
+                            {respondent.icp_score != null && (
                               <div>
                                 <p className="text-xs text-gray-500 font-medium mb-1">ICP Score</p>
-                                <p className="text-sm text-gray-900">{respondent.icp_score.toFixed(2)}</p>
+                                <p className="text-sm text-gray-900 font-bold">{Number(respondent.icp_score).toFixed(0)}/100</p>
+                                {respondent.icp_score_details && (
+                                  <div className="mt-1 space-y-0.5">
+                                    <p className="text-xs text-gray-500">
+                                      Avatar: {(respondent.icp_score_details as Record<string, unknown>).best_avatar_label as string || '—'}
+                                    </p>
+                                    <p className="text-xs text-gray-500">
+                                      Prob. conversão: {(((respondent.icp_score_details as Record<string, unknown>).conversion_probability as number) * 100).toFixed(0)}%
+                                    </p>
+                                    {((respondent.icp_score_details as Record<string, unknown>).avatar_scores as Array<{avatar_label: string; score: number; was_capped: boolean}>)?.map((as, i) => (
+                                      <p key={i} className="text-xs text-gray-400">
+                                        {as.avatar_label}: {as.score.toFixed(0)} {as.was_capped ? '(cap)' : ''}
+                                      </p>
+                                    ))}
+                                  </div>
+                                )}
                               </div>
                             )}
                             {respondent.surveys_responded !== null && (

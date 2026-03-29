@@ -68,6 +68,37 @@ export default async function CohortPage({ params }: Props) {
     .select('*', { count: 'exact', head: true })
     .eq('cohort_id', cohort.id)
 
+  const { count: buyersCount } = await supabase
+    .from('respondents')
+    .select('*', { count: 'exact', head: true })
+    .eq('cohort_id', cohort.id)
+    .eq('is_buyer', true)
+
+  // Score stats
+  const { data: scoredRespondents } = await supabase
+    .from('respondents')
+    .select('icp_score')
+    .eq('cohort_id', cohort.id)
+    .not('icp_score', 'is', null)
+
+  const scores = (scoredRespondents || []).map((r) => Number(r.icp_score))
+  const avgScore = scores.length > 0
+    ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length)
+    : null
+
+  const scoreRanges = [
+    { range: '0-20', min: 0, max: 20, color: 'bg-red-400' },
+    { range: '21-40', min: 21, max: 40, color: 'bg-orange-400' },
+    { range: '41-60', min: 41, max: 60, color: 'bg-yellow-400' },
+    { range: '61-80', min: 61, max: 80, color: 'bg-emerald-400' },
+    { range: '81-100', min: 81, max: 100, color: 'bg-emerald-600' },
+  ]
+  const histogram = scoreRanges.map((r) => ({
+    ...r,
+    count: scores.filter((s) => s >= r.min && s <= r.max).length,
+  }))
+  const maxHistCount = Math.max(...histogram.map((h) => h.count), 1)
+
   const statusLabels: Record<string, string> = {
     planning: 'Planejamento',
     capturing: 'Captação',
@@ -123,14 +154,43 @@ export default async function CohortPage({ params }: Props) {
           <p className="text-2xl font-bold text-gray-900">{respondentsCount || 0}</p>
         </div>
         <div className="bg-white rounded-xl border p-4">
-          <p className="text-sm text-gray-500">Score ICP médio</p>
-          <p className="text-2xl font-bold text-gray-900">—</p>
+          <p className="text-sm text-gray-500">Compradores</p>
+          <p className="text-2xl font-bold text-gray-900">{buyersCount || 0}</p>
+          {(respondentsCount || 0) > 0 && (buyersCount || 0) > 0 && (
+            <p className="text-xs text-gray-400">
+              {(((buyersCount || 0) / (respondentsCount || 1)) * 100).toFixed(1)}% conversão
+            </p>
+          )}
         </div>
         <div className="bg-white rounded-xl border p-4">
-          <p className="text-sm text-gray-500">Alertas ativos</p>
-          <p className="text-2xl font-bold text-gray-900">0</p>
+          <p className="text-sm text-gray-500">Score ICP médio</p>
+          <p className="text-2xl font-bold text-gray-900">
+            {avgScore !== null ? avgScore : '—'}
+          </p>
+          {scores.length > 0 && (
+            <p className="text-xs text-gray-400">{scores.length} scorados</p>
+          )}
         </div>
       </div>
+
+      {/* Score histogram */}
+      {scores.length > 0 && (
+        <div className="bg-white rounded-xl border p-5 mb-8">
+          <h2 className="text-sm font-semibold text-gray-900 mb-4">Distribuição de scores ICP</h2>
+          <div className="flex items-end gap-3 h-24">
+            {histogram.map((h) => (
+              <div key={h.range} className="flex-1 flex flex-col items-center">
+                <span className="text-xs text-gray-500 mb-1">{h.count}</span>
+                <div
+                  className={`w-full rounded-t ${h.color}`}
+                  style={{ height: `${Math.max((h.count / maxHistCount) * 100, 3)}%` }}
+                />
+                <span className="text-xs text-gray-400 mt-1">{h.range}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Actions */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">

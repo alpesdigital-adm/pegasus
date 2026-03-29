@@ -18,6 +18,7 @@ import {
   ChevronRight,
   Plus,
   Layers,
+  Target,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { Organization, Product, Cohort } from '@/types/database'
@@ -182,6 +183,16 @@ export function Sidebar({ user, organization }: SidebarProps) {
                           </Link>
                         )
                       })}
+                      <Link
+                        href={`/org/${organization?.slug}/product/${product.slug}/icp`}
+                        className={cn(
+                          'flex items-center px-2 py-1.5 text-xs rounded hover:bg-gray-800 transition-colors',
+                          pathname.includes(`/product/${product.slug}/icp`) ? 'bg-gray-800 text-white' : 'text-gray-400'
+                        )}
+                      >
+                        <Target className="w-3 h-3 mr-1.5 text-amber-400" />
+                        Perfil ICP
+                      </Link>
                       <Link
                         href={`/onboarding?step=cohort&product=${product.id}`}
                         className="flex items-center px-2 py-1.5 text-xs text-gray-600 rounded hover:bg-gray-800 hover:text-gray-400 transition-colors"

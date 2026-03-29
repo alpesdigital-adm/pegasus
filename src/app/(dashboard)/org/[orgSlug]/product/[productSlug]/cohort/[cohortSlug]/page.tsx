@@ -56,11 +56,12 @@ export default async function CohortPage({ params }: Props) {
 
   if (!cohort) notFound()
 
-  // Counts
+  // Counts — only fully processed surveys
   const { count: surveysCount } = await supabase
     .from('surveys')
     .select('*', { count: 'exact', head: true })
     .eq('cohort_id', cohort.id)
+    .eq('status', 'done')
 
   const { count: respondentsCount } = await supabase
     .from('respondents')

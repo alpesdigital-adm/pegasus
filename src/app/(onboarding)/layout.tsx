@@ -16,25 +16,8 @@ export default async function OnboardingLayout({
     redirect('/login')
   }
 
-  // If user already completed onboarding, redirect to dashboard
-  const { data: profile } = await supabase
-    .from('users')
-    .select('org_id')
-    .eq('id', user.id)
-    .single()
-
-  if (profile?.org_id) {
-    // Check if org exists
-    const { data: org } = await supabase
-      .from('organizations')
-      .select('id')
-      .eq('id', profile.org_id)
-      .single()
-
-    if (org) {
-      redirect('/')
-    }
-  }
+  // Allow access even for users who already have an org — they may be
+  // adding a new product or cohort via ?step=product or ?step=cohort.
 
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center">

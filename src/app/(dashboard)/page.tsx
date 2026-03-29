@@ -8,16 +8,24 @@ export default async function DashboardPage() {
     data: { user },
   } = await supabase.auth.getUser()
 
+  if (!user) {
+    return null // Layout already handles redirect
+  }
+
   const { data: userProfile } = await supabase
     .from('users')
     .select('*')
-    .eq('id', user!.id)
+    .eq('id', user.id)
     .single()
+
+  if (!userProfile?.org_id) {
+    return null // Layout already handles redirect to onboarding
+  }
 
   const { data: products } = await supabase
     .from('products')
     .select('id')
-    .eq('org_id', userProfile!.org_id)
+    .eq('org_id', userProfile.org_id)
 
   const productIds = products?.map((p) => p.id) || []
 

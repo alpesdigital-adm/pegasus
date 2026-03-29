@@ -41,36 +41,134 @@ export async function processSurvey(opts: ProcessOptions) {
   const closedCols = columns.filter((c) => closedTypes.includes(c.columnType))
   const openCols = columns.filter((c) => c.columnType === 'open')
 
-  // Create survey_columns records
-  const surveyColumnsToInsert = columns
-    .filter((c) => c.columnType !== 'noise' && c.columnType !== 'metadata_system')
-    .map((c) => ({
-      survey_id: surveyId,
-      column_index: c.index,
-      original_header: headers[c.index],
-      normalized_header: c.normalizedHeader || headers[c.index],
-      column_type: c.columnType,
-      semantic_category: c.semanticCategory || null,
-      checkbox_group_name: c.checkboxGroupName || null,
-      detected_options: closedTypes.includes(c.columnType)
-        ? JSON.stringify(getUniqueValues(rows, c.index))
-        : null,
-      include_in_analysis: true,
-      user_override: false,
-    }))
+  // ─── Column deduplication at ingestion level ───
+  // Before creating survey_columns, check if equivalent columns already
+  // exist in this cohort from previous surveys. If so, reuse the existing
+  // column_id so all answers point to a canonical field.
 
-  const { data: insertedColumns, error: colError } = await supabase
+  // Fetch existing columns for this cohort (from previous surveys)
+  const { data: existingCohortColumns } = await supabase
     .from('survey_columns')
-    .insert(surveyColumnsToInsert)
-    .select()
+    .select('id, normalized_header, column_type, semantic_category, surveys!inner(cohort_id)')
+    .eq('surveys.cohort_id', cohortId)
 
-  if (colError) throw new Error(`Erro ao salvar colunas: ${colError.message}`)
+  const existingColumns = (existingCohortColumns || []).map((ec) => ({
+    id: ec.id as string,
+    normalizedHeader: ec.normalized_header as string,
+    columnType: ec.column_type as string,
+    semanticCategory: ec.semantic_category as string | null,
+  }))
 
-  // Build column ID map
+  /**
+   * Find an existing column that matches the new one.
+   * Match criteria (ordered by confidence):
+   * 1. Exact normalized_header match + same column_type
+   * 2. Same semantic_category + same column_type + header word overlap > 50%
+   */
+  function findExistingColumn(
+    normalizedHeader: string,
+    columnType: string,
+    semanticCategory: string | null
+  ): string | null {
+    // Strategy 1: exact header match
+    const exactMatch = existingColumns.find(
+      (ec) =>
+        ec.normalizedHeader === normalizedHeader &&
+        ec.columnType === columnType
+    )
+    if (exactMatch) return exactMatch.id
+
+    // Strategy 2: same semantic category + column type + header word overlap
+    if (semanticCategory) {
+      const headerWords = new Set(
+        normalizedHeader.toLowerCase().split(/[_\s]+/).filter((w) => w.length > 2)
+      )
+
+      for (const ec of existingColumns) {
+        if (ec.columnType !== columnType) continue
+        if (ec.semanticCategory !== semanticCategory) continue
+
+        const existingWords = new Set(
+          ec.normalizedHeader.toLowerCase().split(/[_\s]+/).filter((w) => w.length > 2)
+        )
+
+        // Calculate word overlap
+        let overlap = 0
+        for (const word of headerWords) {
+          if (existingWords.has(word)) overlap++
+        }
+        const smaller = Math.min(headerWords.size, existingWords.size)
+        if (smaller > 0 && overlap / smaller >= 0.5) {
+          return ec.id
+        }
+      }
+    }
+
+    return null
+  }
+
+  // Create survey_columns records, reusing existing column IDs where possible
   const colIdMap = new Map<number, string>()
-  insertedColumns?.forEach((col) => {
-    colIdMap.set(col.column_index, col.id)
-  })
+  const newColumnsToInsert: {
+    survey_id: string
+    column_index: number
+    original_header: string
+    normalized_header: string
+    column_type: string
+    semantic_category: string | null
+    checkbox_group_name: string | null
+    detected_options: string | null
+    include_in_analysis: boolean
+    user_override: boolean
+  }[] = []
+
+  const relevantColumns = columns.filter(
+    (c) => c.columnType !== 'noise' && c.columnType !== 'metadata_system'
+  )
+
+  for (const c of relevantColumns) {
+    const normalizedHeader = c.normalizedHeader || headers[c.index]
+    const existingId = findExistingColumn(
+      normalizedHeader,
+      c.columnType,
+      c.semanticCategory || null
+    )
+
+    if (existingId) {
+      // Reuse existing column — answers will point to the canonical column_id
+      colIdMap.set(c.index, existingId)
+    } else {
+      // New column — will be inserted
+      newColumnsToInsert.push({
+        survey_id: surveyId,
+        column_index: c.index,
+        original_header: headers[c.index],
+        normalized_header: normalizedHeader,
+        column_type: c.columnType,
+        semantic_category: c.semanticCategory || null,
+        checkbox_group_name: c.checkboxGroupName || null,
+        detected_options: closedTypes.includes(c.columnType)
+          ? JSON.stringify(getUniqueValues(rows, c.index))
+          : null,
+        include_in_analysis: true,
+        user_override: false,
+      })
+    }
+  }
+
+  // Insert only genuinely new columns
+  if (newColumnsToInsert.length > 0) {
+    const { data: insertedColumns, error: colError } = await supabase
+      .from('survey_columns')
+      .insert(newColumnsToInsert)
+      .select()
+
+    if (colError) throw new Error(`Erro ao salvar colunas: ${colError.message}`)
+
+    insertedColumns?.forEach((col) => {
+      colIdMap.set(col.column_index, col.id)
+    })
+  }
 
   let processedCount = 0
 

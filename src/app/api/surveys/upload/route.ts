@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { parseFile, detectCheckboxGroups } from '@/lib/parsers/csv-xlsx'
+import { createHash } from 'crypto'
 
 export const maxDuration = 60
 
@@ -41,6 +42,29 @@ export async function POST(request: NextRequest) {
     // Read file buffer
     const arrayBuffer = await file.arrayBuffer()
     const buffer = Buffer.from(arrayBuffer)
+
+    // Compute SHA-256 hash for duplicate detection
+    const fileHash = createHash('sha256').update(buffer).digest('hex')
+
+    // Check if this exact file was already uploaded to this cohort
+    const { data: existingDuplicate } = await supabase
+      .from('surveys')
+      .select('id, name, original_filename, created_at')
+      .eq('cohort_id', cohortId)
+      .eq('file_hash', fileHash)
+      .limit(1)
+      .maybeSingle()
+
+    if (existingDuplicate) {
+      return NextResponse.json(
+        {
+          duplicate: true,
+          existingSurvey: existingDuplicate,
+          message: `Este arquivo já foi carregado anteriormente como "${existingDuplicate.name}" (${existingDuplicate.original_filename}).`,
+        },
+        { status: 409 }
+      )
+    }
 
     // Upload to Supabase Storage
     const storagePath = `surveys/${cohortId}/${Date.now()}_${file.name}`
@@ -85,6 +109,7 @@ export async function POST(request: NextRequest) {
         total_rows: parsed.totalRows,
         status: 'uploaded',
         storage_path: storagePath,
+        file_hash: fileHash,
       })
       .select()
       .single()

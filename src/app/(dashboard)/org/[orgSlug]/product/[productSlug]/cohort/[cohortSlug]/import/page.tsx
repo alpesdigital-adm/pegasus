@@ -9,6 +9,7 @@ import {
   Loader2,
   CheckCircle2,
   AlertCircle,
+  AlertTriangle,
   ChevronDown,
   ChevronRight,
   ArrowLeft,
@@ -87,6 +88,7 @@ export default function ImportPage() {
   const [surveyName, setSurveyName] = useState('')
   const [surveyType, setSurveyType] = useState('captacao')
   const [hasMergeableData, setHasMergeableData] = useState(false)
+  const [duplicateWarning, setDuplicateWarning] = useState<string | null>(null)
 
   // Preview state
   const [surveyId, setSurveyId] = useState<string | null>(null)
@@ -161,8 +163,15 @@ export default function ImportPage() {
     formData.append('survey_type', surveyType)
 
     try {
+      setDuplicateWarning(null)
       const res = await fetch('/api/surveys/upload', { method: 'POST', body: formData })
       const data = await res.json()
+
+      if (res.status === 409 && data.duplicate) {
+        setDuplicateWarning(data.message)
+        setLoading(false)
+        return
+      }
 
       if (!res.ok) {
         setError(data.error)
@@ -322,6 +331,17 @@ export default function ImportPage() {
         <div className="flex items-center gap-2 p-3 mb-6 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
           <AlertCircle className="w-4 h-4 flex-shrink-0" />
           {error}
+        </div>
+      )}
+
+      {duplicateWarning && (
+        <div className="flex items-start gap-3 p-4 mb-6 bg-amber-50 border border-amber-300 rounded-lg">
+          <AlertTriangle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
+          <div>
+            <p className="text-sm font-medium text-amber-800">Arquivo duplicado detectado</p>
+            <p className="text-sm text-amber-700 mt-1">{duplicateWarning}</p>
+            <p className="text-xs text-amber-600 mt-2">Se deseja reprocessar, altere o conteúdo do arquivo antes de enviar novamente.</p>
+          </div>
         </div>
       )}
 

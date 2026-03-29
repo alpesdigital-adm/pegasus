@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { generateICPProfiles } from '@/lib/icp'
+import { generateICPProfiles, deduplicateColumns, remapAnswers } from '@/lib/icp'
 import type { RespondentRow, ColumnMeta } from '@/lib/icp'
 
 export const maxDuration = 60
@@ -170,8 +170,20 @@ export async function POST(request: NextRequest) {
     // Filter out columns with only 1 distinct value (no information gain)
     const usableColumns = columns.filter((c) => c.distinctValues.length >= 2)
 
-    // Generate ICP profiles
-    const result = generateICPProfiles(rows, usableColumns)
+    // Deduplicate semantically equivalent columns from different surveys
+    const dedup = deduplicateColumns(usableColumns, rows)
+    const dedupColumns = dedup.groups.map((g) => g.meta)
+    const dedupRows = remapAnswers(rows, dedup)
+
+    console.log(
+      `ICP column dedup: ${dedup.originalCount} → ${dedup.deduplicatedCount} columns`,
+      dedup.groups
+        .filter((g) => g.memberIds.length > 1)
+        .map((g) => `${g.meta.normalizedHeader}: ${g.memberIds.length} merged`)
+    )
+
+    // Generate ICP profiles using deduplicated data
+    const result = generateICPProfiles(dedupRows, dedupColumns)
 
     // Save to icp_profiles table
     // Delete existing auto-generated profiles for this product

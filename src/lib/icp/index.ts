@@ -9,6 +9,7 @@
 export { buildDecisionTree, extractAvatarPaths, classifyRespondent } from './decision-tree'
 export { generateICPProfiles } from './profile-generator'
 export { scoreRespondent, scoreBatch, scoreAgainstAvatar, getScoreBadge } from './scorer'
+export { deduplicateColumns, remapAnswers } from './column-dedup'
 export { DEFAULT_TREE_CONFIG, DEFAULT_SCORING_WEIGHTS } from './types'
 export type {
   RespondentRow,
@@ -22,3 +23,4 @@ export type {
   ClosedRule,
   RuleMatch,
 } from './types'
+export type { ColumnGroup, DeduplicationResult } from './column-dedup'

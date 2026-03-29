@@ -16,6 +16,9 @@ import {
   Play,
   X,
   Trash2,
+  CheckSquare,
+  Square,
+  Minus,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { ColumnClassification } from '@/lib/classify-columns'
@@ -126,6 +129,15 @@ export default function ImportPage() {
   const [processingIndex, setProcessingIndex] = useState(0)
   const [totalProcessed, setTotalProcessed] = useState(0)
 
+  // Bulk selection
+  const [selectedCols, setSelectedCols] = useState<Set<number>>(new Set())
+  const [bulkType, setBulkType] = useState('')
+  const [bulkCategory, setBulkCategory] = useState('')
+
+  // Classification overrides (learned corrections)
+  const [overrides, setOverrides] = useState<Record<string, { columnType: string; semanticCategory: string | null }>>({})
+  const overridesLoaded = useRef(false)
+
   const fileIdCounter = useRef(0)
   const supabase = createClient()
 
@@ -203,6 +215,112 @@ export default function ImportPage() {
     )
   }
 
+  // ─── Bulk selection ──────────────────────────────────────
+
+  function toggleColSelection(colIndex: number) {
+    setSelectedCols((prev) => {
+      const next = new Set(prev)
+      if (next.has(colIndex)) next.delete(colIndex)
+      else next.add(colIndex)
+      return next
+    })
+  }
+
+  function toggleAllCols() {
+    if (!activeFile?.columns) return
+    if (selectedCols.size === activeFile.columns.length) {
+      setSelectedCols(new Set())
+    } else {
+      setSelectedCols(new Set(activeFile.columns.map((c) => c.index)))
+    }
+  }
+
+  function applyBulkEdit() {
+    if (!activeFile || selectedCols.size === 0) return
+    setFiles((prev) =>
+      prev.map((f) => {
+        if (f.id !== activeFile.id || !f.columns) return f
+        return {
+          ...f,
+          columns: f.columns.map((col) => {
+            if (!selectedCols.has(col.index)) return col
+            const updated = { ...col }
+            if (bulkType) updated.columnType = bulkType
+            if (bulkCategory !== '') updated.semanticCategory = bulkCategory || null
+            return updated
+          }),
+        }
+      })
+    )
+    setSelectedCols(new Set())
+    setBulkType('')
+    setBulkCategory('')
+  }
+
+  // ─── Classification overrides (learning) ─────────────────
+
+  async function loadOverrides() {
+    const cId = await resolveCohortId()
+    if (!cId || overridesLoaded.current) return
+    try {
+      const res = await fetch(`/api/surveys/overrides?cohortId=${cId}`)
+      if (res.ok) {
+        const data = await res.json()
+        setOverrides(data.overrides || {})
+      }
+    } catch { /* silent */ }
+    overridesLoaded.current = true
+  }
+
+  async function saveOverrides(columns: ColumnClassification[]) {
+    const cId = cohortId
+    if (!cId || columns.length === 0) return
+    const entries = columns.map((col) => ({
+      normalizedHeader: col.normalizedHeader,
+      columnType: col.columnType,
+      semanticCategory: col.semanticCategory,
+    }))
+    try {
+      await fetch('/api/surveys/overrides', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cohortId: cId, overrides: entries }),
+      })
+      // Update local overrides cache
+      const updated = { ...overrides }
+      for (const e of entries) {
+        updated[e.normalizedHeader] = { columnType: e.columnType, semanticCategory: e.semanticCategory }
+      }
+      setOverrides(updated)
+    } catch { /* silent */ }
+  }
+
+  function applyOverridesToClassification(columns: ColumnClassification[]): ColumnClassification[] {
+    if (Object.keys(overrides).length === 0) return columns
+    let appliedCount = 0
+    const result = columns.map((col) => {
+      const override = overrides[col.normalizedHeader]
+      if (override) {
+        appliedCount++
+        return {
+          ...col,
+          columnType: override.columnType,
+          semanticCategory: override.semanticCategory,
+          reasoning: `(Classificação aprendida de correção anterior) ${col.reasoning}`,
+          confidence: 1.0,
+        }
+      }
+      return col
+    })
+    return result
+  }
+
+  // Clear selection when changing files
+  useEffect(() => {
+    setSelectedCols(new Set())
+    setExpandedCol(null)
+  }, [activeFileIndex])
+
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault()
     setDragOver(false)
@@ -271,9 +389,12 @@ export default function ImportPage() {
         return
       }
 
+      // Apply learned overrides to classification
+      const classifiedColumns = applyOverridesToClassification(classData.classification.columns)
+
       updateFile(entry.id, {
         step: 'review',
-        columns: classData.classification.columns,
+        columns: classifiedColumns,
       })
     } catch {
       updateFile(entry.id, { step: 'error', error: 'Erro ao fazer upload' })
@@ -285,6 +406,9 @@ export default function ImportPage() {
   async function startReviewing() {
     setStep('reviewing')
     setError(null)
+
+    // Load learned overrides before classifying
+    await loadOverrides()
 
     const pendingFiles = files.filter((f) => f.step === 'pending')
     for (let i = 0; i < pendingFiles.length; i++) {
@@ -302,9 +426,21 @@ export default function ImportPage() {
 
   // ─── Confirm review for current file ─────────────────────
 
-  function confirmCurrentReview() {
+  async function confirmCurrentReview() {
     if (!activeFile) return
     updateFile(activeFile.id, { step: 'reviewed' })
+
+    // Save classification as overrides for future files
+    if (activeFile.columns) {
+      await saveOverrides(activeFile.columns)
+      // Apply newly learned overrides to any files still in review
+      setFiles((prev) =>
+        prev.map((f) => {
+          if (f.id === activeFile.id || !f.columns || f.step !== 'review') return f
+          return { ...f, columns: applyOverridesToClassification(f.columns) }
+        })
+      )
+    }
 
     // Move to next file that needs review
     const nextIndex = files.findIndex((f, i) => i > activeFileIndex && f.step === 'review')
@@ -628,14 +764,71 @@ export default function ImportPage() {
                   {/* Column classification review */}
                   <div className="bg-white rounded-xl border p-5">
                     <div className="flex items-center justify-between mb-4">
-                      <h3 className="font-semibold text-gray-900">Classificação das colunas</h3>
-                      <p className="text-xs text-gray-500">Ajuste se necessário</p>
+                      <div className="flex items-center gap-3">
+                        <button
+                          onClick={toggleAllCols}
+                          className="p-0.5 text-gray-400 hover:text-gray-600 transition-colors"
+                          title={selectedCols.size === activeFile.columns.length ? 'Desmarcar todos' : 'Selecionar todos'}
+                        >
+                          {selectedCols.size === 0 && <Square className="w-4 h-4" />}
+                          {selectedCols.size > 0 && selectedCols.size < activeFile.columns.length && <Minus className="w-4 h-4" />}
+                          {selectedCols.size === activeFile.columns.length && <CheckSquare className="w-4 h-4 text-emerald-600" />}
+                        </button>
+                        <h3 className="font-semibold text-gray-900">Classificação das colunas</h3>
+                      </div>
+                      <p className="text-xs text-gray-500">
+                        {selectedCols.size > 0
+                          ? `${selectedCols.size} selecionada${selectedCols.size !== 1 ? 's' : ''}`
+                          : 'Ajuste se necessário'}
+                      </p>
                     </div>
+
+                    {/* Bulk edit bar */}
+                    {selectedCols.size > 0 && (
+                      <div className="flex items-center gap-2 mb-3 p-3 bg-emerald-50 border border-emerald-200 rounded-lg">
+                        <span className="text-xs font-medium text-emerald-800 shrink-0">Editar {selectedCols.size} campo{selectedCols.size !== 1 ? 's' : ''}:</span>
+                        <select
+                          value={bulkType}
+                          onChange={(e) => setBulkType(e.target.value)}
+                          className="flex-1 px-2 py-1.5 border border-gray-200 rounded text-xs bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                        >
+                          <option value="">Tipo (manter)</option>
+                          {ALL_COLUMN_TYPES.map((t) => (
+                            <option key={t} value={t}>{COLUMN_TYPE_LABELS[t]}</option>
+                          ))}
+                        </select>
+                        <select
+                          value={bulkCategory}
+                          onChange={(e) => setBulkCategory(e.target.value)}
+                          className="flex-1 px-2 py-1.5 border border-gray-200 rounded text-xs bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                        >
+                          <option value="">Categoria (manter)</option>
+                          {SEMANTIC_CATEGORIES.map((sc) => (
+                            <option key={sc.value} value={sc.value}>{sc.label}</option>
+                          ))}
+                        </select>
+                        <button
+                          onClick={applyBulkEdit}
+                          disabled={!bulkType && bulkCategory === ''}
+                          className="px-3 py-1.5 bg-emerald-600 text-white text-xs font-medium rounded hover:bg-emerald-700 disabled:opacity-50 transition-colors shrink-0"
+                        >
+                          Aplicar
+                        </button>
+                        <button
+                          onClick={() => { setSelectedCols(new Set()); setBulkType(''); setBulkCategory('') }}
+                          className="p-1 text-gray-400 hover:text-gray-600 transition-colors"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
 
                     <div className="space-y-1">
                       {activeFile.columns.map((col) => {
                         const isExpanded = expandedCol === col.index
+                        const isSelected = selectedCols.has(col.index)
                         const isNoise = col.columnType === 'noise' || col.columnType === 'metadata_system'
+                        const isLearned = col.reasoning?.startsWith('(Classificação aprendida')
 
                         return (
                           <div
@@ -643,31 +836,47 @@ export default function ImportPage() {
                             className={cn(
                               'border rounded-lg transition-colors',
                               isNoise ? 'opacity-50' : '',
-                              isExpanded ? 'border-emerald-300 bg-emerald-50/30' : 'border-gray-100'
+                              isSelected ? 'border-emerald-300 bg-emerald-50/20' : '',
+                              isExpanded ? 'border-emerald-300 bg-emerald-50/30' : !isSelected ? 'border-gray-100' : ''
                             )}
                           >
-                            <button
-                              onClick={() => setExpandedCol(isExpanded ? null : col.index)}
-                              className="flex items-center w-full px-3 py-2.5 text-left"
-                            >
-                              {isExpanded ? (
-                                <ChevronDown className="w-3.5 h-3.5 mr-2 text-gray-400" />
-                              ) : (
-                                <ChevronRight className="w-3.5 h-3.5 mr-2 text-gray-400" />
-                              )}
-                              <span className="text-sm text-gray-900 truncate flex-1 mr-3" title={col.header}>
-                                {col.normalizedHeader || col.header}
-                              </span>
-                              <span className={cn('text-xs px-2 py-0.5 rounded-full font-medium mr-2', COLUMN_TYPE_COLORS[col.columnType] || 'bg-gray-100 text-gray-600')}>
-                                {COLUMN_TYPE_LABELS[col.columnType] || col.columnType}
-                              </span>
-                              {col.semanticCategory && (
-                                <span className="text-xs text-gray-500">{col.semanticCategory}</span>
-                              )}
-                            </button>
+                            <div className="flex items-center w-full px-3 py-2.5">
+                              <button
+                                onClick={(e) => { e.stopPropagation(); toggleColSelection(col.index) }}
+                                className="p-0.5 mr-1.5 text-gray-400 hover:text-emerald-600 transition-colors shrink-0"
+                              >
+                                {isSelected
+                                  ? <CheckSquare className="w-3.5 h-3.5 text-emerald-600" />
+                                  : <Square className="w-3.5 h-3.5" />}
+                              </button>
+                              <button
+                                onClick={() => setExpandedCol(isExpanded ? null : col.index)}
+                                className="flex items-center flex-1 min-w-0 text-left"
+                              >
+                                {isExpanded ? (
+                                  <ChevronDown className="w-3.5 h-3.5 mr-2 text-gray-400 shrink-0" />
+                                ) : (
+                                  <ChevronRight className="w-3.5 h-3.5 mr-2 text-gray-400 shrink-0" />
+                                )}
+                                <span className="text-sm text-gray-900 truncate flex-1 mr-3" title={col.header}>
+                                  {col.normalizedHeader || col.header}
+                                </span>
+                                {isLearned && (
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 font-medium mr-2 shrink-0">
+                                    aprendido
+                                  </span>
+                                )}
+                                <span className={cn('text-xs px-2 py-0.5 rounded-full font-medium mr-2 shrink-0', COLUMN_TYPE_COLORS[col.columnType] || 'bg-gray-100 text-gray-600')}>
+                                  {COLUMN_TYPE_LABELS[col.columnType] || col.columnType}
+                                </span>
+                                {col.semanticCategory && (
+                                  <span className="text-xs text-gray-500 shrink-0">{col.semanticCategory}</span>
+                                )}
+                              </button>
+                            </div>
 
                             {isExpanded && (
-                              <div className="px-3 pb-3 pt-1 border-t border-gray-100 space-y-3">
+                              <div className="px-3 pb-3 pt-1 border-t border-gray-100 space-y-3 ml-6">
                                 <p className="text-xs text-gray-500">{col.reasoning}</p>
                                 <div className="grid grid-cols-2 gap-3">
                                   <div>

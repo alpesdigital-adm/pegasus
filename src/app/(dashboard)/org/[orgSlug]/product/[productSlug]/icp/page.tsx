@@ -16,7 +16,7 @@ import {
   CheckCircle2,
   BarChart3,
 } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { cn, formatHeader } from '@/lib/utils'
 
 interface ClosedRule {
   columnId: string
@@ -397,9 +397,9 @@ export default function ICPPage() {
                           {avatar.treeConditions.map((cond, i) => (
                             <span
                               key={i}
-                              className="inline-flex items-center px-2.5 py-1 bg-violet-50 text-violet-700 text-xs rounded-full"
+                              className="inline-flex items-center px-2.5 py-1 bg-violet-50 text-violet-700 text-xs rounded-lg"
                             >
-                              {cond.header} {cond.operator === 'in' ? '=' : '≠'}{' '}
+                              {formatHeader(cond.header)} {cond.operator === 'in' ? '=' : '≠'}{' '}
                               {cond.values.length <= 2
                                 ? cond.values.join(' / ')
                                 : `${cond.values.length} valores`}
@@ -417,28 +417,32 @@ export default function ICPPage() {
                       {avatar.closedRules.map((rule, i) => (
                         <div
                           key={i}
-                          className="flex items-center gap-3 px-3 py-2 bg-gray-50 rounded-lg text-sm"
+                          className="flex items-start gap-3 px-3 py-2.5 bg-gray-50 rounded-lg text-sm hover:bg-gray-100 transition-colors"
                         >
                           <span
                             className={cn(
-                              'text-xs px-2 py-0.5 rounded-full font-medium',
+                              'text-xs px-2 py-0.5 rounded-full font-medium whitespace-nowrap mt-0.5',
                               RULE_TYPE_COLORS[rule.type]
                             )}
                           >
                             {RULE_TYPE_LABELS[rule.type]}
                           </span>
-                          <span className="flex-1 text-gray-900">{rule.header}</span>
-                          <span className="text-gray-500 text-xs">
-                            {rule.matchValues.length <= 2
-                              ? rule.matchValues.join(', ')
-                              : `${rule.matchValues.length} valores`}
+                          <span className="flex-1 text-gray-900 leading-snug">
+                            {formatHeader(rule.header)}
                           </span>
-                          <span className="text-xs text-gray-400">
-                            {(rule.buyerPercentage * 100).toFixed(0)}% compradores
-                          </span>
-                          <span className="text-xs font-medium text-gray-600">
-                            peso {rule.weight}
-                          </span>
+                          <div className="flex items-center gap-3 shrink-0 mt-0.5">
+                            <span className="text-gray-500 text-xs max-w-[200px] truncate" title={rule.matchValues.join(', ')}>
+                              {rule.matchValues.length <= 2
+                                ? rule.matchValues.join(', ')
+                                : `${rule.matchValues.length} valores`}
+                            </span>
+                            <span className="text-xs text-gray-400 whitespace-nowrap">
+                              {(rule.buyerPercentage * 100).toFixed(0)}%
+                            </span>
+                            <span className="text-xs font-medium text-gray-600 whitespace-nowrap">
+                              peso {rule.weight}
+                            </span>
+                          </div>
                         </div>
                       ))}
                     </div>

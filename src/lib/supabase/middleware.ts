@@ -29,9 +29,16 @@ export async function updateSession(request: NextRequest) {
     }
   )
 
+  // Use getSession() instead of getUser() in middleware.
+  // getSession() reads the JWT from the cookie locally — no HTTP round-trip.
+  // getUser() calls Supabase's /auth/v1/user endpoint every time, adding
+  // ~100-200ms latency AND counting as an edge request.
+  // Server components and API routes still use getUser() for full validation.
   const {
-    data: { user },
-  } = await supabase.auth.getUser()
+    data: { session },
+  } = await supabase.auth.getSession()
+
+  const user = session?.user ?? null
 
   // Public routes that don't require auth
   const publicPaths = ['/login', '/signup', '/callback']
